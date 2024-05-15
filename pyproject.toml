@@ -24,6 +24,7 @@ pyserial = "^3.5"
 smp = "^0.3.4"
 intelhex = "^2.3.0"
 bleak = "^0.21.1"
+python-can = "^4.3.1"
 
 
 [tool.poetry.group.dev.dependencies]
