@@ -11,8 +11,6 @@ from serial import Serial
 from smp import packet as smppacket
 
 logger = logging.getLogger(__name__)
-TX_ID = 123
-RX_ID = 122
 CAN_DL_SIZE = 8
 STD_MAX_ID = 0x7FF
 AWAIT_MSG_TIMEOUT = 0.001
@@ -77,20 +75,24 @@ class SMPCANTransport:
     def __init__(
         self,
         mtu: int = 512,
-        device: CANDevice = CANDevice.PeakUSB
+        device: CANDevice = CANDevice.PeakUSB,
+        rx_id: int = 0xDEAD,
+        tx_id: int = 0xBEEF
     ) -> None:
         self._mtu: Final = mtu
         self._device = device
         self._bus = None
-        self._ext_tx = TX_ID > STD_MAX_ID
-        self._ext_rx = RX_ID > STD_MAX_ID
+        self._rx_id = rx_id
+        self._tx_id = tx_id
+        self._ext_tx = tx_id > STD_MAX_ID
+        self._ext_rx = rx_id > STD_MAX_ID
         self._msg_queue = asyncio.Queue()
         self._buffer = SMPCANTransport._ReadBuffer()
         self.loop = asyncio.new_event_loop()
         logger.debug(f"Initialized {self.__class__.__name__}")
 
     def _rx_cb(self, msg: can.Message) -> None:
-        if msg.arbitration_id != RX_ID:
+        if msg.arbitration_id != self.rx_id:
             return
         result = self.loop.run_until_complete(self._msg_queue.put(msg))
 
@@ -143,7 +145,7 @@ class SMPCANTransport:
             logger.debug(f"Writing encoded packet of size {len(packet)}B; {self.mtu=}")
             logger.debug(f"Total CAN Msgs {len(can_packets)}")
             for can_p in can_packets:
-                msg = can.Message(arbitration_id=TX_ID,
+                msg = can.Message(arbitration_id=self._tx_id,
                                       data=can_p,
                                       is_extended_id=self._ext_tx)
                 self._bus.send(msg)
