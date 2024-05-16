@@ -92,7 +92,7 @@ class SMPCANTransport:
         logger.debug(f"Initialized {self.__class__.__name__}")
 
     def _rx_cb(self, msg: can.Message) -> None:
-        if msg.arbitration_id != self.rx_id:
+        if msg.arbitration_id != self._rx_id:
             return
         result = self.loop.run_until_complete(self._msg_queue.put(msg))
 
