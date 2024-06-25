@@ -119,6 +119,7 @@ class SMPCANTransport:
                                          bitrate=1000000,
                                          frame_type='STD',
                                          operation_mode='normal')
+            await asyncio.sleep(0.1)
         self._reader = can.AsyncBufferedReader()
         listeners: List[can.notifier.MessageRecipient] = [
             self._rx_cb,  # Callback function
@@ -143,13 +144,14 @@ class SMPCANTransport:
 
             can_packets = [packet[i:i + CAN_DL_SIZE] for i in range(0, len(packet), CAN_DL_SIZE)]
             logger.debug(f"Writing encoded packet of size {len(packet)}B; {self.mtu=}")
-            logger.debug(f"Total CAN Msgs {len(can_packets)}")
+            logger.info(f"Total CAN Msgs {len(can_packets)}")
             for can_p in can_packets:
                 msg = can.Message(arbitration_id=self._tx_id,
                                       data=can_p,
                                       is_extended_id=self._ext_tx)
                 self._bus.send(msg)
-
+                if self._device == CANDevice.SeedStudio:
+                    await asyncio.sleep(0.0001)
         logger.debug(f"Sent {len(data)} bytes")
 
     async def receive(self) -> bytes:
