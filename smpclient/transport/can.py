@@ -35,15 +35,18 @@ def _base64_max(size: int) -> int:
     return math.floor(3 / 4 * size) - 2
 
 class CANDevice(Enum):
-    PeakUSB = 'PeakUSB'
     """
     Peak USB CAN
     """
+    PeakUSB = 'PeakUSB'
 
-    SeedStudio = 'SeedStudio'
     """
     The USB-CAN adapter from seedstudio
     """
+    SeedStudio = 'SeedStudio'
+
+    Socket = 'Socket'
+
 
 class SMPCANTransport:
 
@@ -120,6 +123,14 @@ class SMPCANTransport:
                                          frame_type='STD',
                                          operation_mode='normal')
             await asyncio.sleep(0.1)
+        elif self._device == CANDevice.Socket:
+            self._bus = can.interface.Bus(bustype='socketcan',
+                                         channel=address,
+                                         baudrate=2000000,
+                                         bitrate=1000000,
+                                         frame_type='STD',
+                                         operation_mode='normal')
+
         self._reader = can.AsyncBufferedReader()
         listeners: List[can.notifier.MessageRecipient] = [
             self._rx_cb,  # Callback function
