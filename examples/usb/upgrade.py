@@ -7,13 +7,14 @@ import re
 import subprocess
 import time
 from pathlib import Path
-from typing import Final
+from typing import Final, Tuple
 
 from serial.tools.list_ports import comports
 from smp import error as smperr
+from smp.os_management import OS_MGMT_RET_RC
 
 from smpclient import SMPClient
-from smpclient.generics import SMPRequest, TEr0, TEr1, TRep, error, error_v0, error_v1, success
+from smpclient.generics import SMPRequest, TEr1, TEr2, TRep, error, error_v1, error_v2, success
 from smpclient.mcuboot import IMAGE_TLV, ImageInfo
 from smpclient.requests.image_management import ImageStatesRead, ImageStatesWrite
 from smpclient.requests.os_management import ResetWrite
@@ -25,8 +26,8 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-HEX_PATTERN: Final = re.compile(r'a_smp_dut_(\d+)_(\d+)_(\d+).merged.hex')
-MCUBOOT_HEX_PATTERN: Final = re.compile(r'mcuboot_a_(\d+)_(\d+)_(\d+).merged.hex')
+HEX_PATTERN: Final = re.compile(r'a_smp_dut_(\d+)_(\d+)_(\d+)[\.merged]?\.hex')
+MCUBOOT_HEX_PATTERN: Final = re.compile(r'mcuboot_a_(\d+)_(\d+)_(\d+)\.merged\.hex')
 
 
 async def main() -> None:
@@ -66,15 +67,19 @@ async def main() -> None:
     print(f"Using DUT folder: {dut_folder}")
     hex_path: Final = dut_folder / hex
 
-    print(f"Using merged.hex: {hex_path}")
+    if "merged" in str(hex):
+        print(f"Using merged.hex: {hex_path}")
+        print("Flashing the merged.hex...")
+    else:
+        mcuboot_path: Final = dut_folder / "mcuboot.hex"
+        print(f"Using mcuboot: {mcuboot_path}")
+        print("Flashing the mcuboot.hex...")
+        assert subprocess.run(get_runner_command(args.board, mcuboot_path)).returncode == 0
 
-    print("Flashing the merged.hex...")
-    assert (
-        subprocess.run(
-            ("nrfjprog", "--recover", "--reset", "--verify", "--program", hex_path)
-        ).returncode
-        == 0
-    )
+        print(f"Using app hex: {hex_path}")
+        print("Flashing the app hex...")
+
+    assert subprocess.run(get_runner_command(args.board, hex_path)).returncode == 0
 
     a_smp_dut_hash: Final = ImageInfo.load_file(str(dut_folder / a_smp_bin)).get_tlv(
         IMAGE_TLV.SHA256
@@ -111,7 +116,7 @@ async def main() -> None:
     ) as client:
         print("OK")
 
-        async def ensure_request(request: SMPRequest[TRep, TEr0, TEr1]) -> TRep:
+        async def ensure_request(request: SMPRequest[TRep, TEr1, TEr2]) -> TRep:
             print("Sending request...", end="", flush=True)
             response = await client.request(request)
             print("OK")
@@ -166,10 +171,10 @@ async def main() -> None:
         print()
         print("Resetting for swap...")
         reset_response = await client.request(ResetWrite())
-        if error_v0(reset_response):
+        if error_v1(reset_response):
             assert reset_response.rc == smperr.MGMT_ERR.EOK
-        elif error_v1(reset_response):
-            assert reset_response.err.rc == smperr.MGMT_ERR.EOK
+        elif error_v2(reset_response):
+            assert reset_response.err.rc == OS_MGMT_RET_RC.OK
 
     print()
     print("Searching for B SMP DUT...", end="", flush=True)
@@ -208,6 +213,17 @@ async def main() -> None:
             raise SystemExit(f"Received error: {images}")
         else:
             raise SystemExit(f"Unknown response: {images}")
+
+
+def get_runner_command(board: str, hex_path: Path) -> Tuple[str, ...]:
+    if "nrf" in board:
+        print("Using the nrfjprog runner")
+        return ("nrfjprog", "--recover", "--reset", "--verify", "--program", str(hex_path))
+    elif "mimxrt" in board:
+        print("Using the NXP linkserver runner")
+        return ("linkserver", "flash", "MIMXRT1062xxxxA:EVK-MIMXRT1060", "load", str(hex_path))
+    else:
+        raise ValueError(f"Don't know what runner to use for {board}")
 
 
 if __name__ == "__main__":
