@@ -77,7 +77,8 @@ class SMPCANTransport:
         mtu: int = 512,
         device: CANDevice = CANDevice.PeakUSB,
         rx_id: int = 0xDEAD,
-        tx_id: int = 0xBEEF
+        tx_id: int = 0xBEEF,
+        bitrate:int= 1000000
     ) -> None:
         self._mtu: Final = mtu
         self._device = device
@@ -86,6 +87,7 @@ class SMPCANTransport:
         self._tx_id = tx_id
         self._ext_tx = tx_id > STD_MAX_ID
         self._ext_rx = rx_id > STD_MAX_ID
+        self._bitrate = bitrate
         self._msg_queue = asyncio.Queue()
         self._buffer = SMPCANTransport._ReadBuffer()
         self.loop = asyncio.new_event_loop()
@@ -97,28 +99,26 @@ class SMPCANTransport:
         result = self.loop.run_until_complete(self._msg_queue.put(msg))
 
 
-    async def connect(self, address: str) -> None:
+    async def connect(self, address, timeout_s: float) -> None:
         logger.debug(f"Connecting to %s "%(self._device))
         if self._device == CANDevice.PeakUSB:
-            self._bus = can.interface.Bus(interface='pcan',
-                                          fd=False,
-                                          nom_brp=1,
-                                          nom_tseg1=129,
-                                          nom_tseg2=30,
-                                          nom_sjw=1,
-                                          data_brp=1,
-                                          data_tseg1=9,
-                                          data_tseg2=6,
-                                          data_sjw=1,
-                                          bitrate=1000000,
-                                          channel="PCAN_USBBUS1")
+            if address is None:
+                self._bus = can.interface.Bus(interface='pcan',
+                                            bitrate=self._bitrate,
+                                            channel="PCAN_USBBUS1")
+            else:
+                self._bus = can.interface.Bus(interface='pcan',
+                                            bitrate=self._bitrate,
+                                            device_id=address)         
         elif self._device == CANDevice.SeedStudio:
             self._bus = can.interface.Bus(bustype='seeedstudio',
                                          channel=address,
                                          baudrate=2000000,
-                                         bitrate=1000000,
+                                         bitrate=self._bitrate,
                                          frame_type='STD',
                                          operation_mode='normal')
+            # Seedstudio interface does not initialize 
+            # correctly without a delay
             await asyncio.sleep(0.1)
         self._reader = can.AsyncBufferedReader()
         listeners: List[can.notifier.MessageRecipient] = [
