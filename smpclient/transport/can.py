@@ -5,10 +5,12 @@ import logging
 import math
 from enum import IntEnum, unique, Enum
 from functools import cached_property
-from typing import Final
+from typing import Final, List
 import can
 from serial import Serial
 from smp import packet as smppacket
+from typing_extensions import override
+from smpclient.transport import SMPTransport, SMPTransportDisconnected
 
 logger = logging.getLogger(__name__)
 CAN_DL_SIZE = 8
@@ -45,7 +47,7 @@ class CANDevice(Enum):
     The USB-CAN adapter from seedstudio
     """
 
-class SMPCANTransport:
+class SMPCANTransport(SMPTransport):
 
     class _ReadBuffer:
         """The state of the read buffer."""
@@ -74,13 +76,34 @@ class SMPCANTransport:
 
     def __init__(
         self,
-        mtu: int = 512,
+        max_smp_encoded_frame_size: int = 1024,
+        line_length: int = 512,
+        line_buffers: int = 2,
         device: CANDevice = CANDevice.PeakUSB,
         rx_id: int = 0xDEAD,
         tx_id: int = 0xBEEF,
         bitrate:int= 1000000
     ) -> None:
-        self._mtu: Final = mtu
+        """Initialize the serial transport.
+
+        Parameters:
+        - `max_smp_encoded_frame_size`: The maximum size of an encoded SMP
+            frame.  The SMP server needs to have a buffer large enough to
+            receive the encoded frame packets and to store the decoded frame.
+        - `line_length`: The maximum SMP packet size.
+        - `line_buffers`: The number of line buffers in the serial buffer.
+        """
+        if max_smp_encoded_frame_size < line_length * line_buffers:
+            logger.error(
+                f"{max_smp_encoded_frame_size=} is less than {line_length=} * {line_buffers=}!"
+            )
+        elif max_smp_encoded_frame_size != line_length * line_buffers:
+            logger.warning(
+                f"{max_smp_encoded_frame_size=} is not equal to {line_length=} * {line_buffers=}!"
+            )
+        self._max_smp_encoded_frame_size: Final = max_smp_encoded_frame_size
+        self._line_length: Final = line_length
+        self._line_buffers: Final = line_buffers
         self._device = device
         self._bus = None
         self._rx_id = rx_id
@@ -99,6 +122,7 @@ class SMPCANTransport:
         result = self.loop.run_until_complete(self._msg_queue.put(msg))
 
 
+    @override
     async def connect(self, address, timeout_s: float) -> None:
         logger.debug(f"Connecting to %s "%(self._device))
         if self._device == CANDevice.PeakUSB:
@@ -128,37 +152,51 @@ class SMPCANTransport:
         self.notifier = can.Notifier(self._bus, listeners)
         logger.debug(f"Connected to %s "%(self._device))
 
+    @override
     async def disconnect(self) -> None:
         logger.debug(f"Disconnecting from {self._device=}")
         if self._bus is not None:
             self._bus.shutdown()
         logger.debug(f"Disconnected from {self._device=}")
 
+    @override
     async def send(self, data: bytes) -> None:
+        if len(data) > self.max_unencoded_size:
+            raise ValueError(
+                f"Data size {len(data)} exceeds maximum unencoded size {self.max_unencoded_size}"
+            )
         logger.debug(f"Sending {len(data)} bytes")
-        for packet in smppacket.encode(data, line_length=self.mtu):
-            if len(packet) > self.mtu:  # pragma: no cover
-                raise Exception(
-                    f"Encoded packet size {len(packet)} exceeds {self.mtu=}, this is a bug!"
+        try:
+            for packet in smppacket.encode(data, line_length=self._line_length):
+                can_packets = [packet[i:i + CAN_DL_SIZE] for i in range(0, len(packet), CAN_DL_SIZE)]
+                logger.debug(f"Writing encoded packet of size {len(packet)}B; {self._line_length=}")
+                logger.debug(f"Total CAN Msgs {len(can_packets)}")
+                for can_p in can_packets:
+                    msg = can.Message(arbitration_id=self._tx_id,
+                                          data=can_p,
+                                          is_extended_id=self._ext_tx)
+                    self._bus.send(msg)
+                    if self._device == CANDevice.SeedStudio:
+                        await asyncio.sleep(0.0001)
+        except Exception as e:
+            if self._device == CANDevice.SeedStudio:
+                device = self._bus.channel
+            elif self._device == CANDevice.PeakUSB:
+                try:
+                    device = self._bus.device_id
+                except:
+                    device = self._bus.channel
+            raise SMPTransportDisconnected(
+                    f"{self.__class__.__name__} disconnected from {device}"
                 )
-
-            can_packets = [packet[i:i + CAN_DL_SIZE] for i in range(0, len(packet), CAN_DL_SIZE)]
-            logger.debug(f"Writing encoded packet of size {len(packet)}B; {self.mtu=}")
-            logger.info(f"Total CAN Msgs {len(can_packets)}")
-            for can_p in can_packets:
-                msg = can.Message(arbitration_id=self._tx_id,
-                                      data=can_p,
-                                      is_extended_id=self._ext_tx)
-                self._bus.send(msg)
-                if self._device == CANDevice.SeedStudio:
-                    await asyncio.sleep(0.0001)
         logger.debug(f"Sent {len(data)} bytes")
 
+    @override
     async def receive(self) -> bytes:
         decoder = smppacket.decode()
         next(decoder)
 
-        #logger.info("Waiting for response")
+        logger.debug("Waiting for response")
         while True:
             try:
                 b = await self._readuntil()
@@ -167,6 +205,7 @@ class SMPCANTransport:
                 logger.debug(f"Finished receiving {len(e.value)} byte response")
                 return e.value
 
+    @override
     async def _readuntil(self) -> bytes:
         """Read `bytes` until the `delimiter` then return the `bytes` including the `delimiter`."""
 
@@ -272,37 +311,30 @@ class SMPCANTransport:
 
                 return out
 
+    @override
     async def send_and_receive(self, data: bytes) -> bytes:
         await self.send(data)
         return await self.receive()
 
+    @override
     @property
     def mtu(self) -> int:
-        return self._mtu
+        return self._max_smp_encoded_frame_size
 
     @cached_property
     def max_unencoded_size(self) -> int:
-        """The serial transport encodes each packet instead of sending SMP messages as raw bytes.
+        """The serial transport encodes each packet instead of sending SMP messages as raw bytes."""
 
-        The worst case size of an encoded SMP packet is:
-        ```
-        base64_cost(
-            len(smp_message) + len(frame_length) + len(frame_crc16)
-        ) + len(delimiter) + len(line_ending)
-        ```
-        This simplifies to:
-        ```
-        base64_cost(len(smp_message) + 4) + 3
-        ```
-
-        This property specifies the maximum size of an SMP message before it has been encoded for
-        the serial transport.
-        """
-
+        # For each packet, AKA line_buffer, include the cost of the base64
+        # encoded frame_length and CRC16 and the start/continue delimiter.
+        # Add to that the cost of the stop delimiter.
         packet_framing_size: Final = (
             _base64_cost(smppacket.FRAME_LENGTH_STRUCT.size + smppacket.CRC16_STRUCT.size)
             + smppacket.DELIMITER_SIZE
-            + len(smppacket.CR)
-        )
+        ) * self._line_buffers + len(smppacket.END_DELIMITER)
 
+        # Get the number of unencoded bytes that can fit in self.mtu and
+        # subtract the cost of framing the separate packets.
+        # This is the maximum number of unencoded bytes that can be received by
+        # the SMP server with this transport configuration.
         return _base64_max(self.mtu) - packet_framing_size
