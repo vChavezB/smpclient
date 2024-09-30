@@ -47,6 +47,13 @@ class CANDevice(Enum):
     The USB-CAN adapter from seedstudio
     """
 
+def get_peak_channel(address: str) -> int:
+    if "PCAN_USBBUS" in address:
+        return address
+    else:
+        #device id is in hex
+        return int(address, 16)
+
 class SMPCANTransport(SMPTransport):
 
     class _ReadBuffer:
@@ -126,14 +133,16 @@ class SMPCANTransport(SMPTransport):
     async def connect(self, address, timeout_s: float) -> None:
         logger.debug(f"Connecting to %s "%(self._device))
         if self._device == CANDevice.PeakUSB:
-            if address is None:
+            channel = get_peak_channel(address)
+            if type(channel) == str:
+                # expecting address of type "PCAN_USBBUSX"
                 self._bus = can.interface.Bus(interface='pcan',
                                             bitrate=self._bitrate,
-                                            channel="PCAN_USBBUS1")
+                                            channel=channel)
             else:
                 self._bus = can.interface.Bus(interface='pcan',
                                             bitrate=self._bitrate,
-                                            device_id=address)         
+                                            device_id=channel)
         elif self._device == CANDevice.SeedStudio:
             self._bus = can.interface.Bus(bustype='seeedstudio',
                                          channel=address,
