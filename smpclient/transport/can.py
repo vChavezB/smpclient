@@ -239,9 +239,8 @@ class SMPCANTransport(SMPTransport):
             except:
                 timeout_cnt += 1
                 if timeout_cnt >= MAX_TIMEOUT_CNT:
-                    raise Exception(
-                        f"CAN RX Timeout"
-                    )
+                    logger.error("CAN RX Timeout")
+                    raise TimeoutError()
                 continue
             timeout_cnt = 0
             if self._buffer.state == SMPCANTransport._ReadBuffer.State.SER:
