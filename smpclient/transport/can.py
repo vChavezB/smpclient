@@ -148,7 +148,7 @@ class SMPCANTransport(SMPTransport):
                                           bitrate=self._bitrate,
                                           frame_type=self._frame_type,
                                           operation_mode='normal')
-            # Seedstudio interface does not initialize 
+            # Seedstudio interface does not initialize
             # correctly without a delay
             await asyncio.sleep(0.1)
         else:
@@ -167,6 +167,7 @@ class SMPCANTransport(SMPTransport):
     async def disconnect(self) -> None:
         logger.debug(f"Disconnecting from {self._device=}")
         if self._bus is not None:
+            self.notifier.stop()
             self._bus.shutdown()
         logger.debug(f"Disconnected from {self._device=}")
 
