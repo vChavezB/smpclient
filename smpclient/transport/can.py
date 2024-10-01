@@ -36,26 +36,22 @@ def _base64_max(size: int) -> int:
 
     return math.floor(3 / 4 * size) - 2
 
-class CANDevice(Enum):
-    PeakUSB = 'PeakUSB'
-    """
-    Peak USB CAN
-    """
 
-    SeedStudio = 'SeedStudio'
-    """
-    The USB-CAN adapter from seedstudio
-    """
+class CANDevice(Enum):
+    PeakUSB = 'pcan'
+    SeedStudio = 'seeedstudio'
+    Socket = 'socketcan'
+
 
 def get_peak_channel(address: str) -> int:
     if "PCAN_USBBUS" in address:
         return address
     else:
-        #device id is in hex
+        # device id is in hex
         return int(address, 16)
 
-class SMPCANTransport(SMPTransport):
 
+class SMPCANTransport(SMPTransport):
     class _ReadBuffer:
         """The state of the read buffer."""
 
@@ -82,14 +78,14 @@ class SMPCANTransport(SMPTransport):
             """The state of the read buffer."""
 
     def __init__(
-        self,
-        max_smp_encoded_frame_size: int = 1024,
-        line_length: int = 512,
-        line_buffers: int = 2,
-        device: CANDevice = CANDevice.PeakUSB,
-        rx_id: int = 0xDEAD,
-        tx_id: int = 0xBEEF,
-        bitrate:int= 1000000
+            self,
+            max_smp_encoded_frame_size: int = 1024,
+            line_length: int = 512,
+            line_buffers: int = 2,
+            device: CANDevice = CANDevice.PeakUSB,
+            rx_id: int = 0xDEAD,
+            tx_id: int = 0xBEEF,
+            bitrate: int = 1000000
     ) -> None:
         """Initialize the serial transport.
 
@@ -121,6 +117,7 @@ class SMPCANTransport(SMPTransport):
         self._msg_queue = asyncio.Queue()
         self._buffer = SMPCANTransport._ReadBuffer()
         self.loop = asyncio.new_event_loop()
+        self._frame_type = 'STD' if (not self._ext_tx and not self._ext_rx) else 'EXT'
         logger.debug(f"Initialized {self.__class__.__name__}")
 
     def _rx_cb(self, msg: can.Message) -> None:
@@ -128,38 +125,43 @@ class SMPCANTransport(SMPTransport):
             return
         result = self.loop.run_until_complete(self._msg_queue.put(msg))
 
-
     @override
     async def connect(self, address, timeout_s: float) -> None:
-        logger.debug(f"Connecting to %s "%(self._device))
+        logger.debug(f"Connecting to %s " % (self._device))
+        if type(self._device) is not CANDevice:
+            raise ValueError("Invalid CAN Device")
         if self._device == CANDevice.PeakUSB:
             channel = get_peak_channel(address)
             if type(channel) == str:
                 # expecting address of type "PCAN_USBBUSX"
-                self._bus = can.interface.Bus(interface='pcan',
-                                            bitrate=self._bitrate,
-                                            channel=channel)
+                self._bus = can.interface.Bus(interface=self._device.value,
+                                              bitrate=self._bitrate,
+                                              channel=channel)
             else:
                 self._bus = can.interface.Bus(interface='pcan',
-                                            bitrate=self._bitrate,
-                                            device_id=channel)
+                                              bitrate=self._bitrate,
+                                              device_id=channel)
         elif self._device == CANDevice.SeedStudio:
-            self._bus = can.interface.Bus(bustype='seeedstudio',
-                                         channel=address,
-                                         baudrate=2000000,
-                                         bitrate=self._bitrate,
-                                         frame_type='STD',
-                                         operation_mode='normal')
+            self._bus = can.interface.Bus(bustype=self._device.value,
+                                          channel=address,
+                                          baudrate=2000000,
+                                          bitrate=self._bitrate,
+                                          frame_type=self._frame_type,
+                                          operation_mode='normal')
             # Seedstudio interface does not initialize 
             # correctly without a delay
             await asyncio.sleep(0.1)
+        else:
+            self._bus = can.interface.Bus(bustype=self._device.value,
+                                          channel=address,
+                                          frame_type=self._frame_type)
         self._reader = can.AsyncBufferedReader()
         listeners: List[can.notifier.MessageRecipient] = [
             self._rx_cb,  # Callback function
             self._reader  # AsyncBufferedReader() listener
         ]
         self.notifier = can.Notifier(self._bus, listeners)
-        logger.debug(f"Connected to %s "%(self._device))
+        logger.debug(f"Connected to %s " % (self._device))
 
     @override
     async def disconnect(self) -> None:
@@ -182,8 +184,8 @@ class SMPCANTransport(SMPTransport):
                 logger.debug(f"Total CAN Msgs {len(can_packets)}")
                 for can_p in can_packets:
                     msg = can.Message(arbitration_id=self._tx_id,
-                                          data=can_p,
-                                          is_extended_id=self._ext_tx)
+                                      data=can_p,
+                                      is_extended_id=self._ext_tx)
                     self._bus.send(msg)
                     if self._device == CANDevice.SeedStudio:
                         await asyncio.sleep(0.0001)
@@ -196,8 +198,8 @@ class SMPCANTransport(SMPTransport):
                 except:
                     device = self._bus.channel
             raise SMPTransportDisconnected(
-                    f"{self.__class__.__name__} disconnected from {device}"
-                )
+                f"{self.__class__.__name__} disconnected from {device}"
+            )
         logger.debug(f"Sent {len(data)} bytes")
 
     @override
@@ -232,7 +234,7 @@ class SMPCANTransport(SMPTransport):
         timeout_cnt = 0
         while True:
             try:
-                msg = await asyncio.wait_for(self._msg_queue.get(), timeout=AWAIT_MSG_TIMEOUT) # type: can.Message
+                msg = await asyncio.wait_for(self._msg_queue.get(), timeout=AWAIT_MSG_TIMEOUT)  # type: can.Message
             except:
                 timeout_cnt += 1
                 if timeout_cnt >= MAX_TIMEOUT_CNT:
@@ -274,7 +276,7 @@ class SMPCANTransport(SMPTransport):
                                 )
                             except UnicodeDecodeError:  # log as bytes if not
                                 logger.warning(f"{self._conn.port}: {self._buffer.ser[:i].hex()}")
-                            self._buffer.ser = self._buffer.ser[i + 1 :]
+                            self._buffer.ser = self._buffer.ser[i + 1:]
                         except ValueError:
                             break
                     continue
@@ -338,9 +340,10 @@ class SMPCANTransport(SMPTransport):
         # encoded frame_length and CRC16 and the start/continue delimiter.
         # Add to that the cost of the stop delimiter.
         packet_framing_size: Final = (
-            _base64_cost(smppacket.FRAME_LENGTH_STRUCT.size + smppacket.CRC16_STRUCT.size)
-            + smppacket.DELIMITER_SIZE
-        ) * self._line_buffers + len(smppacket.END_DELIMITER)
+                                             _base64_cost(
+                                                 smppacket.FRAME_LENGTH_STRUCT.size + smppacket.CRC16_STRUCT.size)
+                                             + smppacket.DELIMITER_SIZE
+                                     ) * self._line_buffers + len(smppacket.END_DELIMITER)
 
         # Get the number of unencoded bytes that can fit in self.mtu and
         # subtract the cost of framing the separate packets.
