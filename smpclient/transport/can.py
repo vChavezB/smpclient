@@ -146,6 +146,7 @@ class SMPCANTransport(SMPTransport):
                                           channel=address,
                                           baudrate=2000000,
                                           bitrate=self._bitrate,
+                                          timeout=0.5,
                                           frame_type=self._frame_type,
                                           operation_mode='normal')
             # Seedstudio interface does not initialize
