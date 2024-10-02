@@ -198,6 +198,8 @@ class SMPCANTransport(SMPTransport):
                     device = self._bus.device_id
                 except:
                     device = self._bus.channel
+            else:
+                device = self._bus.channel
             raise SMPTransportDisconnected(
                 f"{self.__class__.__name__} disconnected from {device}"
             )
