@@ -11,12 +11,13 @@ from serial import Serial
 from smp import packet as smppacket
 from typing_extensions import override
 from smpclient.transport import SMPTransport, SMPTransportDisconnected
-
+import time
 logger = logging.getLogger(__name__)
 CAN_DL_SIZE = 8
 STD_MAX_ID = 0x7FF
 AWAIT_MSG_TIMEOUT = 0.001
-MAX_TIMEOUT_CNT = 10000
+CAN_TIMEOUT = 3
+MAX_TIMEOUT_CNT = 100000
 
 
 def _base64_cost(size: int) -> int:
@@ -141,6 +142,7 @@ class SMPCANTransport(SMPTransport):
                 self._bus = can.interface.Bus(interface='pcan',
                                               bitrate=self._bitrate,
                                               device_id=channel)
+
         elif self._device == CANDevice.SeedStudio:
             self._bus = can.interface.Bus(bustype=self._device.value,
                                           channel=address,
@@ -236,15 +238,16 @@ class SMPCANTransport(SMPTransport):
         i_continue: int | None = None
         initial_msg = True
         timeout_cnt = 0
+        last_msg_time = time.time()
         while True:
             try:
                 msg = await asyncio.wait_for(self._msg_queue.get(), timeout=AWAIT_MSG_TIMEOUT)  # type: can.Message
             except:
-                timeout_cnt += 1
-                if timeout_cnt >= MAX_TIMEOUT_CNT:
+                if time.time() - last_msg_time > CAN_TIMEOUT:
                     logger.error("CAN RX Timeout")
                     raise TimeoutError()
                 continue
+            last_msg_time = time.time()
             timeout_cnt = 0
             if self._buffer.state == SMPCANTransport._ReadBuffer.State.SER:
                 # read the entire OS buffer
